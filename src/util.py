@@ -25,24 +25,18 @@ def generate_contractions(s1: str, s2: str) -> set[str]:
     >>> generate_contractions(s1, s2)
     {'HrrH', 'rrHrr', 'HrrrH'}
     """
-    # The max length to check for overlap for is the length of whichever string is shorter
     max_len: int = min(len(s1), len(s2))
     contractions: set[str] = set()
 
-    # We check for equality for all sizes `overlap`
+    # Check for equality for all sizes `overlap`, both ways around
     for overlap in range(max_len):
-        # The last `overlap` characters of `s1`
         end_of_s1: str = s1[-overlap:]
-
-        # The first `overlap` characters of `s2`
         start_of_s2: str = s2[:overlap]
 
-        # If they are the same, we can contract
         if end_of_s1 == start_of_s2:
             contraction: str = s1 + s2[overlap:]
             contractions.add(contraction)
 
-        # Then we do the same but the other way around
         end_of_s2: str = s2[-overlap:]
         start_of_s1: str = s1[:overlap]
         if end_of_s2 == start_of_s1:
@@ -122,26 +116,18 @@ def get_most_shaveds(s1: str, s2: str) -> set[tuple[str, str]]:
     {('rrH', ''), ('Hrr', '')}
     """
     # Left first
-
-    # We establish a limit for the overlap, being the length of whichever string is shorter
     limit: int = min(len(s1), len(s2))
-
-    # Then we'll incrementally increase the size of the overlap, starting at 0
     overlap_left: int = 0
 
-    # We can increase the size of the overlap, as long as the parts that should overlap are indeed equal
     while overlap_left < limit and s1[overlap_left] == s2[overlap_left]:
         overlap_left += 1
 
-    # Then we'll see how far we can still find overlap on the right, but we don't want the right overlap
-    # to overlap the left overlap (makes sense?)
+    # We don't want the right overlap to overlap the left overlap (makes sense?)
     limit -= overlap_left
     overlap_right: int = 0
     while overlap_right < limit and s1[-overlap_right - 1] == s2[-overlap_right - 1]:
         overlap_right += 1
 
-    # When we have figured how much overlap we can find, we shave off the overlapping parts,
-    # and we're left with a tuple of representations that are equivalent iff `s1` and `s2` are
     most_shaved_left_first = (
         s1[overlap_left : len(s1) - overlap_right],
         s2[overlap_left : len(s2) - overlap_right],
@@ -168,8 +154,6 @@ def get_most_shaveds(s1: str, s2: str) -> set[tuple[str, str]]:
         s2[overlap_left : len(s2) - overlap_right],
     )
 
-    # We still might have that `most_shaved_left_first` is equal to `most_shaved_right_first`,
-    # but since we combine them into a set, we will never return duplicates
     return {most_shaved_left_first, most_shaved_right_first}
 
 
@@ -210,7 +194,6 @@ def expand_notation(s: str) -> str:
     >>> print(expand_notation(s))
     rrrrrH
     """
-    # We can't have "E" in our representation
     if "E" in s:
         raise SyntaxError(
             f'{s = } should not contain the letter "E", because we would need "e" to represent its inverse, but "e" is reserved for the identity element'
@@ -219,11 +202,9 @@ def expand_notation(s: str) -> str:
     # Replace all occurences of "e", representing the identity element, with the empty string
     s = s.replace("e", "")
 
-    # Replace any occurence of a single letter with a number `n` behind it
-    # with a string of this character repeated `n` times
+    # H4r2 -> HHHHrr
     expanded = re.sub(r"([a-zA-Z])(\d+)", lambda m: m.group(1) * int(m.group(2)), s)
 
-    # Our string should now be either empty, or fully alphabetic
     if expanded and not expanded.isalpha():
         raise SyntaxError(
             f"{s = } is invalid. After expansion, {expanded = } is not alphabetic"
@@ -262,8 +243,7 @@ def compress_notation(s: str) -> str:
     if s == "":
         return "e"
 
-    # Within `s`, replace any substring of the same character with that character, followed by a number
-    # representing the length of the substring
+    # HHHHrr -> H4r2
     compressed = re.sub(
         r"([a-zA-Z])\1+", lambda m: f"{m.group(0)[0]}{len(m.group(0))}", s
     )
