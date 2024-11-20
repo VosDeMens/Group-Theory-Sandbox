@@ -401,15 +401,19 @@ class Group:
         as representations of the same element, hopefully leading to the discovery of equivalences.
         """
         while not self.is_complete():
-            # We loop over the rules in order, this is not essential but it's nice to keep track
-            # And we need to make a copy for the loop anyway
-            sorted_prime_reductibles: tuple[str, ...] = tuple(
-                sorted(self._prime_reductibles, key=self._rep_sort_key)
+            sorted_prime_reductibles: list[str] = sorted(
+                self._prime_reductibles, key=self._rep_sort_key
             )
 
-            # We check for all combinations of prime reductibles, including reductibles with themselves
+            # Check for all combinations of prime reductibles, including reductibles with themselves
             for i, s1 in enumerate(sorted_prime_reductibles):
                 for s2 in sorted_prime_reductibles[i:]:
+                    # We might already have removed one of them
+                    if (
+                        s1 not in self._prime_reductibles
+                        or s2 not in self._prime_reductibles
+                    ):
+                        continue
                     contractions: set[str] = generate_contractions(s1, s2)
                     for contraction in contractions:
                         self._integrate((contraction,))
