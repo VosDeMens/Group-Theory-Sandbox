@@ -1,53 +1,16 @@
-from typing import Iterable, Any, Callable
+from typing import Iterable
 
 from src.util import (
     generate_contractions,
     apply_rule_once,
+    get_inverse_rep,
     get_most_shaveds,
     expand_notation,
     compress_notation,
     anti_cap,
 )
 from src.my_types import strings
-
-
-def dict_sort_key_len(s: str) -> tuple[int, str]:
-    """A sort key that will sort strings based on length, and then on the value itself.
-
-    Parameters
-    ----------
-    s : str
-        The string we want compare to other strings.
-
-    Returns
-    -------
-    tuple[int, str]
-        A tuple containing the length of `s`, and `s` itself secundarily.
-    """
-    return (len(s), s)
-
-
-def dict_sort_key_default(s: str) -> str:
-    """The default sort key for strings.
-
-    Parameters
-    ----------
-    s : str
-        The string we want compare to other strings.
-
-    Returns
-    -------
-    str
-        Just the string itself.
-    """
-    return s
-
-
-# The sort key we will use when integrating new representations
-INTEGRATE_KEY: Callable[[str], Any] = dict_sort_key_len
-
-# The sort key we will use when printing a collection of representations
-PRINT_KEY: Callable[[str], Any] = dict_sort_key_default
+from src.exceptions import IncompleteGroupException
 
 
 class Group:
@@ -89,22 +52,29 @@ class Group:
         evaluate : bool, optional
             Whether we immediately want to infer the group structure or not, by default True
         """
-        self.name: str = name
-        self.sink_cap: int = sink_cap
+        self._name: str = name
+        self._sink_cap: int = sink_cap
 
-        # `self.reps_to_sinks` is gonna contain all reps of group elements we have encountered,
+        # `self._reps_to_sinks` is gonna contain all reps of group elements we have encountered,
         # with a reference to the most reduced currently discovered rep
-        self.reps_to_sinks: dict[str, str] = {}
+        self._reps_to_sinks: dict[str, str] = {}
 
-        # `self.prime_reductibles` is gonna contain all reps that can be reduced to a sink,
+        # `self._prime_reductibles` is gonna contain all reps that can be reduced to a sink,
         # that wouldn't otherwise be reachable with the established prime reductibles
-        self.prime_reductibles: set[str] = set()
+        self._prime_reductibles: set[str] = set()
 
-        # `self.generator_chars` is gonna contain all individual characters we encounter
-        self.generator_chars: set[str] = set()
+        # `self._generator_chars` is gonna contain all individual characters we encounter
+        self._generator_chars: set[str] = set()
 
-        # `self.sinks` is gonna contain all reps that can't be reduced further
-        self.sinks: set[str] = set()
+        self._inverse_chars: set[str] = set()
+
+        # `self._sinks` is gonna contain all reps that can't be reduced further
+        self._sinks: set[str] = set()
+
+        # `self._inverses_of_generator_chars` is gonna contain the inverses for all
+        # generator characters, expressed in terms of generator characters. We will use it
+        # to determine inverses of any other representations
+        self._inverses_of_generator_chars: dict[str, str] = {}
 
         if initial_reps_elements is None:
             initial_reps_elements = tuple()
@@ -116,6 +86,8 @@ class Group:
         for reps in initial_reps_elements:
             # This function could be called externally with compressed notation
             expanded_reps = [expand_notation(rep) for rep in reps]
+
+            self._update_generator_chars(expanded_reps)
             self._integrate(expanded_reps)
 
         # If we should evaluate, we will try and find the full structure of the group here
@@ -127,7 +99,7 @@ class Group:
         """Uses the information that all elements in `expanded_reps` describe the same group element.
 
         First of all we can equate all elements in `expanded_reps`, but maybe we already know how to recude
-        some elements in `expanded_reps` with already established reps in `self.prime_reductibles`.
+        some elements in `expanded_reps` with already established reps in `self._prime_reductibles`.
         Or maybe the equivalence of `expanded_reps` provides information on how to further reduce established
         representations that so far were considered prime.
 
@@ -142,19 +114,16 @@ class Group:
             The sink (most reduced currently established representation)
             for the element represented by `expanded_reps`.
         """
-        # Update generator chars
-        self._update_generator_chars(expanded_reps)
-
         # Start recursion to get all currently reachable equivalent representations
         all_relevant_equivalent_reps: set[str] = find_all_reachable_representations(
-            expanded_reps, self.reps_to_sinks, self.prime_reductibles
+            expanded_reps, self._reps_to_sinks, self._prime_reductibles
         )
 
         # Determine the most reduced one
-        most_reduced: str = min(all_relevant_equivalent_reps, key=INTEGRATE_KEY)
+        most_reduced: str = min(all_relevant_equivalent_reps, key=self._rep_sort_key)
 
         for rep in all_relevant_equivalent_reps:
-            # Establish equivalence between `rep` and `most_reduced` in `self.reps_to_sinks`
+            # Establish equivalence between `rep` and `most_reduced` in `self._reps_to_sinks`
             self._set_entry(rep, most_reduced)
 
             # If `rep` is a sink, we can continue, because the rest of this block is only for
@@ -177,21 +146,23 @@ class Group:
         # Return the most reduced representation of the input
         return most_reduced
 
-    def _set_entry(self, rep: str, new_reduced: str) -> None:
+    def _set_entry(
+        self, rep: str, new_reduced: str, process_for_primes: bool = True
+    ) -> None:
         """Processes the information that `rep` can be reduced to `new_reduced`.
 
         In this function, the following things happen:
-        - Check if `rep` is already in `self.reps_to_sinks`. If so, we have discovered
+        - Check if `rep` is already in `self._reps_to_sinks`. If so, we have discovered
         that two reps that were both considered sinks so far, are actually equivalent.
-        - Otherwise we register `rep` in `self.reps_to_sinks` with a reference to `new_reduced`.
+        - Otherwise we register `rep` in `self._reps_to_sinks` with a reference to `new_reduced`.
         - If `rep` is not a sink, we process it as a potential prime reductible.
 
         Parameters
         ----------
         rep : str
-            The representation to add to `self.reps_to_sinks`, and to process in the ways described above.
+            The representation to add to `self._reps_to_sinks`, and to process in the ways described above.
         new_reduced : str
-            The potential sink state to have `rep` refer to in `self.reps_to_sinks`, if we haven't
+            The potential sink state to have `rep` refer to in `self._reps_to_sinks`, if we haven't
             already established a better option.
 
         Raises
@@ -200,10 +171,10 @@ class Group:
             If we add `new_reduced` as a new sink, we check whether we haven't exceeded
             the number of sinks we wanna allow.
         """
-        if rep in self.reps_to_sinks:
+        if rep in self._reps_to_sinks:
             # If `rep` is already established with the same reduced representation `new_reduced`,
             # we don't need to do anything and can return
-            known_reduced = self.reps_to_sinks[rep]
+            known_reduced = self._reps_to_sinks[rep]
             if new_reduced == known_reduced:
                 return
 
@@ -211,68 +182,70 @@ class Group:
             # we have discovered a new equivalence.
             # We see which of the newly equivalent reduced versions is the most reduced
             most_reduced, less_reduced = sorted(
-                (known_reduced, new_reduced), key=INTEGRATE_KEY
+                (known_reduced, new_reduced), key=self._rep_sort_key
             )
 
-            # Then we change all current refs to `less_reduced` into refs to `most_reduced`, and return,
-            # because the rest of this function deals with representations we haven't encountered before.
+            # Then we change all current refs to `less_reduced` into refs to `most_reduced`
             self._set_for_entries_with_value(less_reduced, most_reduced)
+
+            # The rest of this function only deals with representations we haven't encountered before.
             return
 
-        # If `rep` is not already established, we just add it to `self.reps_to_sinks` with a ref to `new_reduced`
-        self.reps_to_sinks[rep] = new_reduced
+        # If `rep` is not already established, we just add it to `self._reps_to_sinks` with a ref to `new_reduced`
+        self._reps_to_sinks[rep] = new_reduced
 
-        # `new_reduced` has to be a sink. it might be an established sink, but `self.sinks` is a set,
+        # `new_reduced` has to be a sink. it might be an established sink, but `self._sinks` is a set,
         # so we don't have to worry about duplicates and just add it in case it's new
-        self.sinks.add(new_reduced)
+        self._sinks.add(new_reduced)
 
         # If `rep` and `new_reduced` are equal, `rep` is a sink, and can't be used as a reduction rule
         if rep == new_reduced:
             # We also have to check if we're not over our cap. This is here because i haven't written
             # anything to handle infinite groups and i don't like getting stuck in loops
-            if len(self.sinks) > self.sink_cap:
+            if len(self._sinks) > self._sink_cap:
                 raise MemoryError("Too many sinks")
             return
 
         # If `rep` and `new_reduced` are not equal, it can potentially be used as a prime reductible,
         # and we'll have to do some checks
-        self._process_as_potential_prime_reductible(rep)
+        if process_for_primes:
+            self._process_as_potential_prime_reductible(rep)
 
     def _set_for_entries_with_value(self, old_value: str, new_value: str) -> None:
-        """Changes all references to `old_value` in `self.reps_to_sinks` into references to `new_value`.
+        """Changes all references to `old_value` in `self._reps_to_sinks` into references to `new_value`.
 
         Parameters
         ----------
         old_value : str
-            The representation we're gonna replace with `new_value` in `self.reps_to_sinks`
+            The representation we're gonna replace with `new_value` in `self._reps_to_sinks`
         new_value : str
             The representation with which we're gonna replace `old_value`
         """
         # If the old reference and the new reference are the same, or `old_value` is
         # not currently a sink, we don't have to do anything.
         # It is easier to do this check here, otherwise it has to happen in multiple other places
-        if old_value == new_value or old_value not in self.sinks:
+        if old_value == new_value or old_value not in self._sinks:
             return
 
         # If they're not the same and `old_value` is currently a sink,
         # we change every ref to `old_value` into a ref to `new_value`
-        for unreduced, reduced in self.reps_to_sinks.items():
+        for unreduced, reduced in self._reps_to_sinks.items():
             if reduced == old_value:
-                self.reps_to_sinks[unreduced] = new_value
+                self._reps_to_sinks[unreduced] = new_value
 
-                # `unreduced` might be part of `self.prime_reductibles`, but if it is, it now refers
+                # `unreduced` might be part of `self._prime_reductibles`, but if it is, it now refers
                 # to a different sink, so we should check if we need to update its status.
                 self._process_as_potential_prime_reductible(unreduced)
 
         # `old_value` used to be a sink, but it's not anymore, and `new_value` now is
-        self.sinks.remove(old_value)
-        self.sinks.add(new_value)
+        self._sinks.remove(old_value)
+        self._sinks.add(new_value)
 
     def _process_as_potential_prime_reductible(self, rep: str) -> None:
         """Checks if `rep` is prime reductible, and if so, processes it as such.
 
-        This means we add it to `self.prime_reductibles`, and then we check for all previously established
-        prime reductibles whether they still are, and if not, we remove them from `self.prime_reductibles`.
+        This means we add it to `self._prime_reductibles`, and then we check for all previously established
+        prime reductibles whether they still are, and if not, we remove them from `self._prime_reductibles`.
 
         Parameters
         ----------
@@ -283,24 +256,24 @@ class Group:
         if not self._should_be_prime_reductible(rep):
             return
 
-        # If `rep` is a prime reductible, we add it to `self.prime_reductibles`
-        self.prime_reductibles.add(rep)
+        # If `rep` is a prime reductible, we add it to `self._prime_reductibles`
+        self._prime_reductibles.add(rep)
 
-        # Then we check whether the other reps in `self.prime_reductibles` should remain in there
-        for established_prime in tuple(self.prime_reductibles):
+        # Then we check whether the other reps in `self._prime_reductibles` should remain in there
+        for established_prime in tuple(self._prime_reductibles):
             # If `rep` is less reduced than `established_prime`, we can't possibly reduce
-            if INTEGRATE_KEY(rep) >= INTEGRATE_KEY(established_prime):
+            if self._rep_sort_key(rep) >= self._rep_sort_key(established_prime):
                 continue
 
             # Otherwise, if we find `estblished_prime` to be redundant, we remove it
             if not self._should_be_prime_reductible(established_prime):
-                self.prime_reductibles.remove(established_prime)
+                self._prime_reductibles.remove(established_prime)
 
     def _should_be_prime_reductible(self, rep: str) -> bool:
         """Assesses whether `rep` is a prime reductible for the current state of this `Group` object.
 
-        If we can not reduce `rep` to its associated sink in `self.reps_to_sinks` by using the currently
-        established `self.prime_reductibles`, it should itself be considered a prime reductible.
+        If we can not reduce `rep` to its associated sink in `self._reps_to_sinks` by using the currently
+        established `self._prime_reductibles`, it should itself be considered a prime reductible.
 
         Parameters
         ----------
@@ -313,13 +286,13 @@ class Group:
             Whether `rep` is a prime reductible.
         """
         # We'll have to check whether we can reduce `rep`, but since we don't want to use `rep`
-        # to reduce `rep`, and `rep` might already be part of `self.prime_reductibles`, we should
+        # to reduce `rep`, and `rep` might already be part of `self._prime_reductibles`, we should
         # create a copy that doesn't contain `rep`
-        other_prime_reductibles = self.prime_reductibles - {rep}
+        other_prime_reductibles = self._prime_reductibles - {rep}
 
         # We're only gonna use `other_prime_reductibles` in the reduction of `rep`
         allowed_references = {
-            prime: self.reps_to_sinks[prime] for prime in other_prime_reductibles
+            prime: self._reps_to_sinks[prime] for prime in other_prime_reductibles
         }
 
         # We assess which representations we can find from `rep` using just these reductibles
@@ -331,14 +304,14 @@ class Group:
 
         # `rep` should be a prime reductible, iff we can not reduce it to its associated sink
         should_be_prime = (
-            self.reps_to_sinks[rep] not in reachable_representations_from_rep
+            self._reps_to_sinks[rep] not in reachable_representations_from_rep
         )
         return should_be_prime
 
     def _update_generator_chars(self, reps: strings) -> None:
-        """Adds all individual characters in the elements in `reps` to `self.generator_chars`.
+        """Adds all individual characters in the elements in `reps` to `self._generator_chars`.
 
-        If it is a new generator character, we check if its inverse is in `self.generator_chars` as well,
+        If it is a new generator character, we check if its inverse is in `self._generator_chars` as well,
         represented by the opposite case of the character (so inverse of H := h, and inverse of h := H).
         We then also integrate the rule that Hh == hH == e.
 
@@ -347,22 +320,18 @@ class Group:
         reps : strings
             The representations from which to extract the individual characters.
         """
-        # We create a set to only consider individual characters
-        generator_chars_in_reps = set("".join([rep for rep in reps]))
-
-        for g in generator_chars_in_reps:
-            # If we have already established `g` as a generator character, we can continue to the next
-            if g in self.generator_chars:
+        for g in "".join(reps):
+            # If we have already established `g` as a generator or inverse character, we continue
+            if g in self._generator_chars or g in self._inverse_chars:
                 continue
 
             # Otherwise we add it now
-            self.generator_chars.add(g)
+            self._generator_chars.add(g)
 
-            # And then we check if we've encountered the character with opposite case,
-            # which represents the inverse of `g`, and integrate the inverse rule
+            # And we'll add the inverse to our inverse set, and establish their relation
             g_inverse = anti_cap(g)
-            if g_inverse in self.generator_chars:
-                self._integrate((g + g_inverse, g_inverse + g, ""))
+            self._inverse_chars.add(g_inverse)
+            self._integrate((g + g_inverse, g_inverse + g, ""))
 
     def _determine_first_element_with_incomplete_image(self) -> tuple[str, str] | None:
         """Some elements might not have a complete image.
@@ -378,17 +347,35 @@ class Group:
             have already been established.
         """
         # The sinks represent all elements we're aware of
-        for sink in self.sinks:
+        for sink in self._sinks:
             # The generator chars represent all shortestly representable group elements
-            for generator_char in self.generator_chars:
+            for generator_char in self._generator_chars:
                 # If we find a sink, such that if we add a generator char to it, we don't recognise the result
                 # we don't know this composition yet, and we don't know that we have discovered the full structure yet
-                if sink + generator_char not in self.reps_to_sinks:
+                if sink + generator_char not in self._reps_to_sinks:
                     # So we return the missing link
                     return (sink, generator_char)
 
         # If all of the structure is established, we return `None`
         return None
+
+    def _rep_sort_key(self, s: str) -> tuple[int, int, str]:
+        """A sort key that will sort strings based on length, and then on the value itself.
+
+        Parameters
+        ----------
+        s : str
+            The string we want compare to other strings.
+
+        Returns
+        -------
+        tuple[int, str]
+            A tuple containing the length of `s`, and `s` itself secundarily.
+        """
+        return (self._count_inverse_characters(s), len(s), s)
+
+    def _count_inverse_characters(self, s: str) -> int:
+        return sum(1 for char in s if char in self._inverse_chars)
 
     def __str__(self) -> str:
         """See `self.__repr__`"""
@@ -411,36 +398,48 @@ class Group:
         str
             The string representation of this Group object
         """
-        name_string = f"Group with name: {self.name}"
+        name_string = f"Group with name: {self._name}"
 
-        sinks_sorted = list(sorted(self.sinks, key=PRINT_KEY))
-        sinks_expanded = [compress_notation(sink) for sink in sinks_sorted]
-        sinks_string = f"Sinks:\n{sinks_expanded}"
+        sinks_sorted = list(sorted(self._sinks, key=self._rep_sort_key))
+        sinks_compressed = [compress_notation(sink) for sink in sinks_sorted]
+        sinks_string = f"Sinks:\n{sinks_compressed}"
 
-        prime_reductibles_sorted = list(sorted(self.prime_reductibles, key=PRINT_KEY))
-        prime_reductibles_expanded = [
-            f"{compress_notation(prime)} -> {compress_notation(self.reps_to_sinks[prime])}"
+        prime_reductibles_sorted = list(
+            sorted(self._prime_reductibles, key=self._rep_sort_key)
+        )
+        prime_reductibles_compressed = [
+            f"{compress_notation(prime)} -> {compress_notation(self._reps_to_sinks[prime])}"
             for prime in prime_reductibles_sorted
         ]
         prime_reductibles_string = (
-            f"Prime reductibles:\n{'\n'.join(prime_reductibles_expanded)}"
+            f"Prime reductibles:\n{'\n'.join(prime_reductibles_compressed)}"
         )
 
         sink_g = self._determine_first_element_with_incomplete_image()
         completeness_string = (
-            "Complete" + (" (trivially)" if len(self.sinks) == 1 else "")
+            "Complete" + (" (trivially)" if len(self._sinks) == 1 else "")
             if sink_g is None
-            else f"Incomplete, missing {''.join(sink_g)}"
+            else f"Incomplete, missing {compress_notation(''.join(sink_g))}"
         )
 
         return "\n\n".join(
             (name_string, sinks_string, prime_reductibles_string, completeness_string)
         )
 
-    def integrate_combined_prime_reductibles(self) -> None:
-        """Takes pairs of `self.prime_reductibles` and integrates their combinations.
+    def __call__(self, *reps: str) -> None:
+        """Integrates `reps`, and prints the most reduced representation for it, and the group itself."""
+        expanded_reps = [expand_notation(rep) for rep in reps]
+        self._update_generator_chars(expanded_reps)
+        most_reduced = self._integrate(expanded_reps)
+        print(f"Most reduced: {compress_notation(most_reduced)}")
+        print(self)
 
-        An example could be we have `self.prime_reductibles` := {"LH", "HR"}
+    # Everything below this point is public, and can be called externally
+
+    def integrate_combined_prime_reductibles(self) -> None:
+        """Takes pairs of `self._prime_reductibles` and integrates their combinations.
+
+        An example could be we have `self._prime_reductibles` := {"LH", "HR"}
         We can get the combination "LHR" (see `generate_contractions`). This can be reduced in two ways,
         leading to two potentially different reduced forms, which we can then integrate
         as representations of the same element, hopefully leading to the discovery of equivalences.
@@ -449,7 +448,7 @@ class Group:
             # We loop over the rules in order, this is not essential but it's nice to keep track
             # And we need to make a copy for the loop anyway
             sorted_prime_reductibles: tuple[str, ...] = tuple(
-                sorted(self.prime_reductibles, key=INTEGRATE_KEY)
+                sorted(self._prime_reductibles, key=self._rep_sort_key)
             )
 
             # We check for all combinations of prime reductibles, including reductibles with themselves,
@@ -463,7 +462,7 @@ class Group:
                         self._integrate((contraction,))
 
             # If we did not find any new primes, we have nothing left to try
-            if set(sorted_prime_reductibles) == self.prime_reductibles:
+            if set(sorted_prime_reductibles) == self._prime_reductibles:
                 break
 
     def fill_in_gaps(self) -> None:
@@ -487,12 +486,72 @@ class Group:
         # If there is no element whose image we haven't fully discovered, we are complete
         return self._determine_first_element_with_incomplete_image() is None
 
-    def __call__(self, *reps: str) -> None:
-        """Integrates `reps`, and prints the most reduced representation for it, and the group itself."""
-        expanded_reps = [expand_notation(rep) for rep in reps]
-        most_reduced = self._integrate(expanded_reps)
-        print(f"Most reduced: {compress_notation(most_reduced)}")
-        print(self)
+    def get_sink_for(self, s: str) -> str:
+        if not self.is_complete():
+            raise IncompleteGroupException()
+
+        # This function uses recursion, but we don't want to check `self._is_complete()`
+        # every recursive call, so once we've asserted completeness, we can just use this nested function
+        def get_sink_rec(s_expanded: str) -> str:
+            # If we've already encountered `s`, we can just return its associated sink
+            if s_expanded in self._reps_to_sinks:
+                sink = self._reps_to_sinks[s_expanded]
+                return sink
+
+            # Otherwise we'll split `s` in two, and reduce the halves individually
+            half_len: int = len(s_expanded) // 2
+            first_half: str = get_sink_rec(s_expanded[:half_len])
+            second_half: str = get_sink_rec(s_expanded[half_len:])
+
+            # Then stick them back together, to get a shorter rep, equivalent to `s`
+            reduced = first_half + second_half
+
+            # And if we've encountered the reduced version, we can use its associated sink
+            if reduced in self._reps_to_sinks:
+                sink = self._reps_to_sinks[reduced]
+
+                # While we're here, we might as well establish the equivalence internally
+                self._set_entry(s_expanded, sink, False)
+                return sink
+
+            # If this still doesn't work, we can integrate `reduced`
+            sink = self._integrate((reduced,))
+
+            # And use its sink to establish equivalence
+            self._set_entry(s_expanded, sink, False)
+            return sink
+
+        # Finally, we expand `s` and return the rep returned by the nested recursive function
+        s_expanded = expand_notation(s)
+        sink = get_sink_rec(s_expanded)
+        return sink
+
+    def get_inverse_of(self, s: str) -> str:
+        """Finds the inverse of `s`.
+
+        Parameters
+        ----------
+        s : str
+            Rep to invert.
+
+        Returns
+        -------
+        str
+            Inverse.
+        """
+        inverted_rep = get_inverse_rep(s)
+        return self.get_sink_for(inverted_rep)
+
+    @property
+    def nr_of_explored_reps(self) -> int:
+        """Number of representations we've encountered during inferring the structure of the group.
+
+        Returns
+        -------
+        int
+            ...
+        """
+        return len(self._reps_to_sinks)
 
 
 def find_all_reachable_representations(

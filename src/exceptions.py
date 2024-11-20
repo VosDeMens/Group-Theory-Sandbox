@@ -1,0 +1,2 @@
+class IncompleteGroupException(Exception):
+    pass

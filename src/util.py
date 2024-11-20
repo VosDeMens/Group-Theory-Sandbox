@@ -295,3 +295,21 @@ def anti_cap(s: str) -> str:
     if s.islower():
         return s.capitalize()
     return s.lower()
+
+
+@lru_cache
+def get_inverse_rep(s: str) -> str:
+    """Reverses `s` and makes all characters the opposite case.
+
+    Parameters
+    ----------
+    s : str
+        Rep to invert.
+
+    Returns
+    -------
+    str
+        Inverse.
+    """
+    s_expanded = expand_notation(s)
+    return "".join(anti_cap(c) for c in reversed(s_expanded))
